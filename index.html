@@ -37,14 +37,14 @@
       <label><input type="checkbox" id="dbg-bbox" checked /> Mostrar bounding box</label>
       <label><input type="checkbox" id="dbg-fps" checked /> Mostrar FPS</label>
       <label><input type="checkbox" id="dbg-tracking" /> Mostrar tracking points</label>
-      <label class="disabled"><input type="checkbox" disabled /> Mostrar homografía <em>(Fase 5)</em></label>
-      <label class="disabled"><input type="checkbox" disabled /> Mostrar carta digital <em>(Fase 6)</em></label>
+      <label><input type="checkbox" id="dbg-digital" /> Mostrar carta digital</label>
     </div>
   </section>
 
   <script src="camera.js"></script>
   <script src="cardDetector.js"></script>
   <script src="cardTracker.js"></script>
+  <script src="perspective.js"></script>
   <script src="app.js"></script>
   <script>
     function onOpenCvLoad() {
