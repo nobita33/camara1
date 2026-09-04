@@ -117,6 +117,9 @@ html, body {
   position: absolute;
   top: calc(env(safe-area-inset-top) + 14px);
   left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
   font-size: 12px;
   color: rgba(236, 236, 236, 0.55);
 }
@@ -134,4 +137,43 @@ html, body {
   font-size: 16px;
   line-height: 1;
   backdrop-filter: blur(6px);
+}
+
+.btn-debug {
+  right: 60px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.debug-panel {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 56px);
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(8px);
+  font-size: 12px;
+  color: var(--ink);
+  max-width: 220px;
+}
+
+.debug-panel label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.debug-panel label.disabled {
+  color: var(--ink-low);
+}
+
+.debug-panel em {
+  font-style: normal;
+  font-size: 10px;
+  color: var(--ink-low);
 }
