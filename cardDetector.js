@@ -120,7 +120,7 @@ const CardDetector = (() => {
 
     let pts = null;
     let approx = new cv.Mat();
-    for (let mult = 0.02; mult <= 0.06 && !pts; mult += 0.02) {
+    for (let mult = 0.02; mult <= 0.08 && !pts; mult += 0.02) {
       approx.delete();
       approx = new cv.Mat();
       cv.approxPolyDP(hull, approx, mult * perimeter, true);
@@ -201,9 +201,18 @@ const CardDetector = (() => {
       edges = new cv.Mat();
       cv.Canny(blurred, edges, lower, upper);
 
+      // Cierre morfológico en vez de dilatación simple: una esquina
+      // REDONDEADA (la de cualquier carta real) suele producir un borde
+      // Canny más débil/discontinuo justo en la curva que en un tramo
+      // recto — un rectángulo de esquinas rectas casi nunca tiene ese
+      // problema, por eso "con rectángulos sí, con cartas no". El cierre
+      // (dilatar y luego erosionar) rellena esos huecos pequeños sin
+      // hacer crecer el resto del contorno tanto como una dilatación
+      // simple, así que sigue sin fusionar la carta con objetos cercanos
+      // como pasaba antes.
       dilated = new cv.Mat();
       kernel = cv.Mat.ones(3, 3, cv.CV_8U);
-      cv.dilate(edges, dilated, kernel, new cv.Point(-1, -1), 1);
+      cv.morphologyEx(edges, dilated, cv.MORPH_CLOSE, kernel, new cv.Point(-1, -1), 2);
 
       contours = new cv.MatVector();
       hierarchy = new cv.Mat();
