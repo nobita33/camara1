@@ -24,12 +24,13 @@
  */
 
 const CardDetector = (() => {
-  const WORK_WIDTH = 400;         // resolución de trabajo para OpenCV
+  const WORK_WIDTH = 320;         // resolución de trabajo para OpenCV (bajado de 400: cada detección es más barata)
   const MIN_AREA_RATIO = 0.035;   // candidato mínimo: % del área de trabajo
   const MAX_AREA_RATIO = 0.92;    // descarta "todo el encuadre" como candidato
-  const ASPECT_MIN = 1.05;        // proporción lado largo/lado corto admitida
-  const ASPECT_MAX = 2.4;
-  const MIN_EXTENT = 0.65;        // % mínimo del rectángulo envolvente que el contorno debe rellenar
+  const ASPECT_MIN = 1.0;         // proporción lado largo/lado corto admitida
+  const ASPECT_MAX = 2.6;
+  const MIN_EXTENT = 0.55;        // % mínimo del rectángulo envolvente que el contorno debe rellenar
+  const TOP_N_CANDIDATES = 6;     // solo se analizan a fondo los N contornos más grandes del frame
   const DETECT_INTERVAL_MS = 90;  // ~11 detecciones/seg en modo búsqueda
 
   let ready = false;
@@ -119,7 +120,7 @@ const CardDetector = (() => {
 
     let pts = null;
     let approx = new cv.Mat();
-    for (let mult = 0.02; mult <= 0.08 && !pts; mult += 0.01) {
+    for (let mult = 0.02; mult <= 0.06 && !pts; mult += 0.02) {
       approx.delete();
       approx = new cv.Mat();
       cv.approxPolyDP(hull, approx, mult * perimeter, true);
@@ -209,17 +210,35 @@ const CardDetector = (() => {
       cv.findContours(dilated, contours, hierarchy, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_SIMPLE);
 
       const workArea = WORK_WIDTH * workHeight;
+
+      // Analizar a fondo (hull + approxPolyDP + minAreaRect) cada
+      // contorno del frame es lo más caro de esta función. En una
+      // escena con textura (cara, pelo, muebles...) puede haber
+      // decenas de contornos externos, y la inmensa mayoría son
+      // demasiado pequeños para ser la carta. Los ordenamos por área
+      // en bruto y solo analizamos a fondo los N más grandes — el
+      // resto se descarta con un cálculo barato (cv.contourArea).
+      const candidates = [];
+      for (let i = 0; i < contours.size(); i++) {
+        const c = contours.get(i);
+        candidates.push({ contour: c, rawArea: cv.contourArea(c) });
+      }
+      candidates.sort((a, b) => b.rawArea - a.rawArea);
+
       let best = null;
       let bestArea = 0;
+      const minRawArea = workArea * MIN_AREA_RATIO * 0.5; // umbral laxo: el área final tras minAreaRect suele ser mayor que la del contorno en bruto
 
-      for (let i = 0; i < contours.size(); i++) {
-        const contour = contours.get(i);
-        const result = extractQuad(contour, workArea);
-        contour.delete();
-        if (result && result.area > bestArea) {
-          bestArea = result.area;
-          best = result.ordered;
+      for (let i = 0; i < candidates.length; i++) {
+        const { contour, rawArea } = candidates[i];
+        if (i < TOP_N_CANDIDATES && rawArea >= minRawArea) {
+          const result = extractQuad(contour, workArea);
+          if (result && result.area > bestArea) {
+            bestArea = result.area;
+            best = result.ordered;
+          }
         }
+        contour.delete();
       }
 
       if (best) {
