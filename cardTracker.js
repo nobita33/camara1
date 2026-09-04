@@ -163,22 +163,32 @@ const CardTracker = (() => {
       if (H.rows === 3 && H.cols === 3) {
         const h = Array.from(H.data64F);
         const quadWork = nativeQuadToWork(quadNative, scale);
-        updatedQuadWork = {};
+        const candidate = {};
         ["tl", "tr", "br", "bl"].forEach((k) => {
-          updatedQuadWork[k] = applyHomography(h, quadWork[k]);
+          candidate[k] = applyHomography(h, quadWork[k]);
         });
 
-        // Nos quedamos solo con los puntos que la homografía considera
-        // inliers, para no arrastrar outliers al siguiente frame.
-        const inlierNext = [];
-        for (let i = 0; i < inlierMask.rows; i++) {
-          if (inlierMask.data[i]) inlierNext.push(nextGood[i * 2], nextGood[i * 2 + 1]);
-        }
-        if (inlierNext.length / 2 >= MIN_POINTS) {
-          safeDelete(prevPtsMat);
-          prevPtsMat = cv.matFromArray(inlierNext.length / 2, 1, cv.CV_32FC2, inlierNext);
-        } else {
-          updatedQuadWork = null;
+        // El flujo óptico puede engancharse a puntos que en realidad no
+        // pertenecen a la carta (una cara u objeto del fondo que se
+        // mueve de forma distinta). Si eso pasa, la homografía estimada
+        // suele producir un cuadrilátero absurdo — no convexo, o cuya
+        // área cambia de golpe de un frame a otro. Antes de aceptarlo,
+        // comprobamos que siga pareciendo la misma carta.
+        if (isPlausibleQuad(candidate, quadArea(quadWork))) {
+          updatedQuadWork = candidate;
+
+          // Nos quedamos solo con los puntos que la homografía considera
+          // inliers, para no arrastrar outliers al siguiente frame.
+          const inlierNext = [];
+          for (let i = 0; i < inlierMask.rows; i++) {
+            if (inlierMask.data[i]) inlierNext.push(nextGood[i * 2], nextGood[i * 2 + 1]);
+          }
+          if (inlierNext.length / 2 >= MIN_POINTS) {
+            safeDelete(prevPtsMat);
+            prevPtsMat = cv.matFromArray(inlierNext.length / 2, 1, cv.CV_32FC2, inlierNext);
+          } else {
+            updatedQuadWork = null;
+          }
         }
       }
 
@@ -215,6 +225,52 @@ const CardTracker = (() => {
     const y = h[3] * pt.x + h[4] * pt.y + h[5];
     const w = h[6] * pt.x + h[7] * pt.y + h[8];
     return { x: x / w, y: y / w };
+  }
+
+  function quadArea(quad) {
+    const pts = [quad.tl, quad.tr, quad.br, quad.bl];
+    let area = 0;
+    for (let i = 0; i < 4; i++) {
+      const p1 = pts[i];
+      const p2 = pts[(i + 1) % 4];
+      area += p1.x * p2.y - p2.x * p1.y;
+    }
+    return Math.abs(area / 2);
+  }
+
+  function isConvexQuad(quad) {
+    const pts = [quad.tl, quad.tr, quad.br, quad.bl];
+    let sign = 0;
+    for (let i = 0; i < 4; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % 4];
+      const c = pts[(i + 2) % 4];
+      const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+      if (cross !== 0) {
+        const s = Math.sign(cross);
+        if (sign === 0) sign = s;
+        else if (s !== sign) return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Última barrera antes de aceptar el resultado de un frame de
+   * tracking: rechaza cuadriláteros no convexos o cuya área haya
+   * cambiado de forma implausible respecto al frame anterior — la
+   * señal típica de que el optical flow se ha enganchado a algo que
+   * no es la carta.
+   */
+  function isPlausibleQuad(candidate, prevArea) {
+    if (!isConvexQuad(candidate)) return false;
+    const area = quadArea(candidate);
+    if (area < 4) return false;
+    if (prevArea > 0) {
+      const ratio = area / prevArea;
+      if (ratio < 0.35 || ratio > 3) return false;
+    }
+    return true;
   }
 
   /**
