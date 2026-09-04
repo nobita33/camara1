@@ -1,11 +1,12 @@
 /**
- * app.js — FASE 1
+ * app.js — FASE 2
  *
- * Solo orquesta la UI: cambia de pantalla, arranca/para la cámara y
- * mantiene un contador de FPS con requestAnimationFrame. Ese bucle es
- * intencionadamente el que reutilizaremos en la FASE 2+ para dibujar
- * detección y tracking sobre el canvas overlay, así que ya lo dejamos
- * corriendo y alineado con el vídeo desde ahora.
+ * Añade a la FASE 1: llamar a CardDetector con cadencia limitada
+ * dentro del render loop, mapear las coordenadas detectadas (que
+ * viven en el espacio del frame de vídeo nativo) al espacio visual
+ * del overlay (que sufre el recorte de `object-fit: cover` y el
+ * espejado CSS), y dibujar esquinas / bounding box según el panel de
+ * debug.
  */
 
 const startScreen = document.getElementById("start-screen");
@@ -15,7 +16,15 @@ const backBtn = document.getElementById("back-btn");
 const statusEl = document.getElementById("status");
 const video = document.getElementById("video");
 const overlay = document.getElementById("overlay");
+const overlayCtx = overlay.getContext("2d");
 const fpsEl = document.getElementById("fps");
+const detectorStatusEl = document.getElementById("detector-status");
+
+const debugToggleBtn = document.getElementById("debug-toggle-btn");
+const debugPanel = document.getElementById("debug-panel");
+const dbgCorners = document.getElementById("dbg-corners");
+const dbgBbox = document.getElementById("dbg-bbox");
+const dbgFps = document.getElementById("dbg-fps");
 
 let rafId = null;
 let frameCount = 0;
@@ -27,10 +36,6 @@ function setStatus(message, isError = false) {
 }
 
 function sizeOverlayToVideo() {
-  // El canvas debe tener exactamente el mismo tamaño en pantalla que
-  // el <video>, en píxeles reales del dispositivo, para que cualquier
-  // cosa que dibujemos encima (esquinas, homografía...) coincida con
-  // lo que el usuario ve.
   const rect = video.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   overlay.width = rect.width * dpr;
@@ -39,21 +44,97 @@ function sizeOverlayToVideo() {
   overlay.style.height = `${rect.height}px`;
 }
 
-function renderLoop() {
-  frameCount++;
-  const now = performance.now();
-  const elapsed = now - lastFpsSample;
+/**
+ * El vídeo se muestra con object-fit: cover, así que su contenido se
+ * escala y recorta para llenar el elemento. Para dibujar algo que
+ * coincida visualmente con un punto del frame nativo, hay que
+ * reproducir esa misma transformación.
+ */
+function getVideoCoverTransform() {
+  const rect = video.getBoundingClientRect();
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh || !rect.width || !rect.height) return null;
 
+  const scale = Math.max(rect.width / vw, rect.height / vh);
+  const offsetX = (rect.width - vw * scale) / 2;
+  const offsetY = (rect.height - vh * scale) / 2;
+  return { scale, offsetX, offsetY };
+}
+
+function toScreenPoint(pt, transform) {
+  return {
+    x: pt.x * transform.scale + transform.offsetX,
+    y: pt.y * transform.scale + transform.offsetY,
+  };
+}
+
+function drawOverlay(quad) {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = video.getBoundingClientRect();
+
+  overlayCtx.save();
+  overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  overlayCtx.clearRect(0, 0, rect.width, rect.height);
+
+  if (quad) {
+    const transform = getVideoCoverTransform();
+    if (transform) {
+      const corners = ["tl", "tr", "br", "bl"].map((k) => toScreenPoint(quad[k], transform));
+
+      if (dbgBbox.checked) {
+        overlayCtx.beginPath();
+        overlayCtx.moveTo(corners[0].x, corners[0].y);
+        for (let i = 1; i < corners.length; i++) overlayCtx.lineTo(corners[i].x, corners[i].y);
+        overlayCtx.closePath();
+        overlayCtx.strokeStyle = "rgba(184, 57, 74, 0.9)";
+        overlayCtx.lineWidth = 2;
+        overlayCtx.stroke();
+      }
+
+      if (dbgCorners.checked) {
+        const labels = ["TL", "TR", "BR", "BL"];
+        corners.forEach((pt, i) => {
+          overlayCtx.beginPath();
+          overlayCtx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
+          overlayCtx.fillStyle = "#ececec";
+          overlayCtx.fill();
+
+          // Contrarrestamos el espejo CSS del propio canvas al escribir
+          // texto, si no las letras saldrían invertidas.
+          overlayCtx.save();
+          overlayCtx.translate(pt.x, pt.y - 14);
+          overlayCtx.scale(-1, 1);
+          overlayCtx.font = "10px -apple-system, sans-serif";
+          overlayCtx.fillStyle = "rgba(236, 236, 236, 0.8)";
+          overlayCtx.textAlign = "center";
+          overlayCtx.fillText(labels[i], 0, 0);
+          overlayCtx.restore();
+        });
+      }
+    }
+  }
+
+  overlayCtx.restore();
+}
+
+function renderLoop() {
+  const now = performance.now();
+
+  frameCount++;
+  const elapsed = now - lastFpsSample;
   if (elapsed >= 500) {
     const fps = Math.round((frameCount / elapsed) * 1000);
     fpsEl.textContent = `${fps} fps`;
     frameCount = 0;
     lastFpsSample = now;
   }
+  fpsEl.classList.toggle("hidden", !dbgFps.checked);
 
-  // FASE 2 en adelante: aquí se llamará a la detección de la carta
-  // sobre el frame actual de `video`, y se dibujará el resultado en
-  // `overlay`. Por ahora el bucle solo demuestra que corre estable.
+  if (CardDetector.isReady()) {
+    CardDetector.maybeDetect(video, now);
+  }
+  drawOverlay(CardDetector.isReady() ? CardDetector.getQuad() : null);
 
   rafId = requestAnimationFrame(renderLoop);
 }
@@ -70,6 +151,7 @@ async function handleStart() {
     setStatus("");
 
     sizeOverlayToVideo();
+    CardDetector.reset();
     frameCount = 0;
     lastFpsSample = performance.now();
     renderLoop();
@@ -84,9 +166,14 @@ async function handleStart() {
 function handleBack() {
   if (rafId) cancelAnimationFrame(rafId);
   Camera.stop();
+  CardDetector.reset();
   cameraScreen.classList.add("hidden");
   startScreen.classList.remove("hidden");
 }
+
+document.addEventListener("opencv-ready", () => {
+  detectorStatusEl.textContent = "";
+});
 
 window.addEventListener("resize", () => {
   if (!cameraScreen.classList.contains("hidden")) sizeOverlayToVideo();
@@ -97,3 +184,4 @@ window.addEventListener("orientationchange", () => {
 
 startBtn.addEventListener("click", handleStart);
 backBtn.addEventListener("click", handleBack);
+debugToggleBtn.addEventListener("click", () => debugPanel.classList.toggle("hidden"));
