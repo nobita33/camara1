@@ -162,13 +162,17 @@ const CardDetector = (() => {
   }
 
   function autoCannyThresholds(grayMat) {
-    // Aproximación barata de "auto canny": en vez de un 50/150 fijo,
+    // Aproximación barata de "auto canny": en vez de un umbral fijo,
     // centra los umbrales en el brillo medio de la escena para que
-    // funcione tanto con luz intensa como tenue.
+    // funcione tanto con luz intensa como tenue. Margen ampliado
+    // (antes 0.66/1.33) para captar bordes DÉBILES — típicamente el
+    // borde exterior real de la carta contra un fondo de color
+    // parecido — que con un margen más estrecho no llegaban a
+    // registrarse como borde en absoluto.
     const mean = cv.mean(grayMat)[0];
     return {
-      lower: Math.max(0, 0.66 * mean),
-      upper: Math.min(255, 1.33 * mean),
+      lower: Math.max(0, 0.6 * mean),
+      upper: Math.min(255, 1.4 * mean),
     };
   }
 
@@ -195,7 +199,7 @@ const CardDetector = (() => {
       cv.cvtColor(src, gray, cv.COLOR_RGBA2GRAY);
 
       blurred = new cv.Mat();
-      cv.GaussianBlur(gray, blurred, new cv.Size(5, 5), 0);
+      cv.GaussianBlur(gray, blurred, new cv.Size(7, 7), 0);
 
       const { lower, upper } = autoCannyThresholds(blurred);
       edges = new cv.Mat();
@@ -211,7 +215,7 @@ const CardDetector = (() => {
       // simple, así que sigue sin fusionar la carta con objetos cercanos
       // como pasaba antes.
       dilated = new cv.Mat();
-      kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+      kernel = cv.Mat.ones(5, 5, cv.CV_8U);
       cv.morphologyEx(edges, dilated, cv.MORPH_CLOSE, kernel, new cv.Point(-1, -1), 2);
 
       contours = new cv.MatVector();
