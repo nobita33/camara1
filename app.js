@@ -1,12 +1,17 @@
 /**
- * app.js — FASE 2
+ * app.js — FASE 4
  *
- * Añade a la FASE 1: llamar a CardDetector con cadencia limitada
- * dentro del render loop, mapear las coordenadas detectadas (que
- * viven en el espacio del frame de vídeo nativo) al espacio visual
- * del overlay (que sufre el recorte de `object-fit: cover` y el
- * espejado CSS), y dibujar esquinas / bounding box según el panel de
- * debug.
+ * Orquesta el ciclo completo: mientras no hay carta localizada, se
+ * apoya en CardDetector (contornos) a su cadencia limitada. En cuanto
+ * encuentra un candidato, arranca CardTracker (optical flow), que
+ * lleva las esquinas frame a frame sin tener que re-detectar el
+ * contorno. Si el tracking se pierde, se vuelve al modo búsqueda.
+ *
+ * Mientras se está trackeando, cada ~1.3s se lanza además una
+ * detección de "control" en segundo plano: si encuentra un candidato
+ * razonablemente cerca del que se está trackeando, se usa para
+ * re-anclar el tracking (corrige la deriva acumulada y renueva los
+ * puntos de seguimiento, que se van degradando con el tiempo).
  */
 
 const startScreen = document.getElementById("start-screen");
@@ -25,10 +30,20 @@ const debugPanel = document.getElementById("debug-panel");
 const dbgCorners = document.getElementById("dbg-corners");
 const dbgBbox = document.getElementById("dbg-bbox");
 const dbgFps = document.getElementById("dbg-fps");
+const dbgTracking = document.getElementById("dbg-tracking");
+
+const REACQUIRE_INTERVAL_MS = 1300;
+const REACQUIRE_MAX_DRIFT_RATIO = 0.6; // distancia entre centros vs. tamaño del quad trackeado
 
 let rafId = null;
 let frameCount = 0;
 let lastFpsSample = performance.now();
+let opencvReady = false;
+
+// 'searching' | 'tracking'
+let mode = "searching";
+let currentQuad = null; // último quad válido a dibujar, coords nativas
+let lastReacquireAt = 0;
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message || "";
@@ -44,12 +59,6 @@ function sizeOverlayToVideo() {
   overlay.style.height = `${rect.height}px`;
 }
 
-/**
- * El vídeo se muestra con object-fit: cover, así que su contenido se
- * escala y recorta para llenar el elemento. Para dibujar algo que
- * coincida visualmente con un punto del frame nativo, hay que
- * reproducir esa misma transformación.
- */
 function getVideoCoverTransform() {
   const rect = video.getBoundingClientRect();
   const vw = video.videoWidth;
@@ -69,7 +78,19 @@ function toScreenPoint(pt, transform) {
   };
 }
 
-function drawOverlay(quad) {
+function quadCenter(quad) {
+  const pts = [quad.tl, quad.tr, quad.br, quad.bl];
+  return {
+    x: pts.reduce((s, p) => s + p.x, 0) / 4,
+    y: pts.reduce((s, p) => s + p.y, 0) / 4,
+  };
+}
+
+function quadDiagonal(quad) {
+  return Math.hypot(quad.br.x - quad.tl.x, quad.br.y - quad.tl.y);
+}
+
+function drawOverlay(quad, trackingPoints) {
   const dpr = window.devicePixelRatio || 1;
   const rect = video.getBoundingClientRect();
 
@@ -77,9 +98,9 @@ function drawOverlay(quad) {
   overlayCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
   overlayCtx.clearRect(0, 0, rect.width, rect.height);
 
-  if (quad) {
-    const transform = getVideoCoverTransform();
-    if (transform) {
+  const transform = getVideoCoverTransform();
+  if (transform) {
+    if (quad) {
       const corners = ["tl", "tr", "br", "bl"].map((k) => toScreenPoint(quad[k], transform));
 
       if (dbgBbox.checked) {
@@ -87,7 +108,7 @@ function drawOverlay(quad) {
         overlayCtx.moveTo(corners[0].x, corners[0].y);
         for (let i = 1; i < corners.length; i++) overlayCtx.lineTo(corners[i].x, corners[i].y);
         overlayCtx.closePath();
-        overlayCtx.strokeStyle = "rgba(184, 57, 74, 0.9)";
+        overlayCtx.strokeStyle = mode === "tracking" ? "rgba(76, 175, 118, 0.9)" : "rgba(184, 57, 74, 0.9)";
         overlayCtx.lineWidth = 2;
         overlayCtx.stroke();
       }
@@ -100,8 +121,6 @@ function drawOverlay(quad) {
           overlayCtx.fillStyle = "#ececec";
           overlayCtx.fill();
 
-          // Contrarrestamos el espejo CSS del propio canvas al escribir
-          // texto, si no las letras saldrían invertidas.
           overlayCtx.save();
           overlayCtx.translate(pt.x, pt.y - 14);
           overlayCtx.scale(-1, 1);
@@ -113,9 +132,53 @@ function drawOverlay(quad) {
         });
       }
     }
+
+    if (dbgTracking.checked && trackingPoints && trackingPoints.length) {
+      overlayCtx.fillStyle = "rgba(76, 175, 118, 0.85)";
+      trackingPoints.forEach((p) => {
+        const sp = toScreenPoint(p, transform);
+        overlayCtx.beginPath();
+        overlayCtx.arc(sp.x, sp.y, 2, 0, Math.PI * 2);
+        overlayCtx.fill();
+      });
+    }
   }
 
   overlayCtx.restore();
+}
+
+function tryStartTracking(quad) {
+  if (CardTracker.start(video, quad)) {
+    mode = "tracking";
+    currentQuad = quad;
+    lastReacquireAt = performance.now();
+  }
+}
+
+/**
+ * Lanza una detección de contorno "de control" mientras se está
+ * trackeando, y si el resultado es razonablemente coherente con lo
+ * que ya se está siguiendo, re-ancla el tracking a él (corrige
+ * deriva, renueva puntos de seguimiento).
+ */
+function maybeReacquire(now) {
+  if (now - lastReacquireAt < REACQUIRE_INTERVAL_MS) return;
+  lastReacquireAt = now;
+
+  const before = CardDetector.getQuad();
+  CardDetector.maybeDetect(video, now, true);
+  const fresh = CardDetector.getQuad();
+
+  if (!fresh || fresh === before || !currentQuad) return;
+
+  const centerCurrent = quadCenter(currentQuad);
+  const centerFresh = quadCenter(fresh);
+  const dist = Math.hypot(centerCurrent.x - centerFresh.x, centerCurrent.y - centerFresh.y);
+  const size = quadDiagonal(currentQuad);
+
+  if (size > 0 && dist / size < REACQUIRE_MAX_DRIFT_RATIO) {
+    tryStartTracking(fresh);
+  }
 }
 
 function renderLoop() {
@@ -131,10 +194,28 @@ function renderLoop() {
   }
   fpsEl.classList.toggle("hidden", !dbgFps.checked);
 
-  if (CardDetector.isReady()) {
-    CardDetector.maybeDetect(video, now);
+  if (opencvReady) {
+    if (mode === "searching") {
+      CardDetector.maybeDetect(video, now);
+      const quad = CardDetector.getQuad();
+      if (quad) tryStartTracking(quad);
+      currentQuad = quad;
+      detectorStatusEl.textContent = quad ? "" : "buscando carta…";
+    } else if (mode === "tracking") {
+      const updated = CardTracker.update(video, currentQuad);
+      if (updated) {
+        currentQuad = updated;
+        maybeReacquire(now);
+        detectorStatusEl.textContent = "";
+      } else {
+        mode = "searching";
+        currentQuad = null;
+        detectorStatusEl.textContent = "buscando carta…";
+      }
+    }
   }
-  drawOverlay(CardDetector.isReady() ? CardDetector.getQuad() : null);
+
+  drawOverlay(currentQuad, mode === "tracking" ? CardTracker.getDebugPointsNative() : null);
 
   rafId = requestAnimationFrame(renderLoop);
 }
@@ -152,6 +233,9 @@ async function handleStart() {
 
     sizeOverlayToVideo();
     CardDetector.reset();
+    CardTracker.stop();
+    mode = "searching";
+    currentQuad = null;
     frameCount = 0;
     lastFpsSample = performance.now();
     renderLoop();
@@ -167,12 +251,16 @@ function handleBack() {
   if (rafId) cancelAnimationFrame(rafId);
   Camera.stop();
   CardDetector.reset();
+  CardTracker.stop();
+  mode = "searching";
+  currentQuad = null;
   cameraScreen.classList.add("hidden");
   startScreen.classList.remove("hidden");
 }
 
 document.addEventListener("opencv-ready", () => {
-  detectorStatusEl.textContent = "";
+  opencvReady = true;
+  detectorStatusEl.textContent = "buscando carta…";
 });
 
 window.addEventListener("resize", () => {
