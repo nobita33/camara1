@@ -29,6 +29,7 @@ const CardDetector = (() => {
   const MAX_AREA_RATIO = 0.92;    // descarta "todo el encuadre" como candidato
   const ASPECT_MIN = 1.05;        // proporción lado largo/lado corto admitida
   const ASPECT_MAX = 2.4;
+  const MIN_EXTENT = 0.65;        // % mínimo del rectángulo envolvente que el contorno debe rellenar
   const DETECT_INTERVAL_MS = 90;  // ~11 detecciones/seg en modo búsqueda
 
   let ready = false;
@@ -98,6 +99,20 @@ const CardDetector = (() => {
    * proporción plausible de carta.
    */
   function extractQuad(contour, workArea) {
+    // FILTRO CLAVE (el que faltaba): un contorno real de carta rellena
+    // casi todo su rectángulo rotado mínimo (una carta es, literalmente,
+    // un rectángulo). Si la dilatación ha fusionado el borde de la
+    // carta con el pelo, la cara o el techo en un solo contorno grande
+    // e irregular, ese contorno "llena" solo una fracción pequeña de su
+    // rectángulo envolvente. Rechazarlo aquí, antes de intentar sacarle
+    // 4 esquinas, es lo que evita que el sistema enganche una figura
+    // gigante que abarca cara + mano + techo en vez de la carta.
+    const boundingRect = cv.minAreaRect(contour);
+    const boundingArea = boundingRect.size.width * boundingRect.size.height;
+    const contourArea = cv.contourArea(contour);
+    const extent = boundingArea > 0 ? contourArea / boundingArea : 0;
+    if (extent < MIN_EXTENT) return null;
+
     const hull = new cv.Mat();
     cv.convexHull(contour, hull, false, true);
     const perimeter = cv.arcLength(hull, true);
@@ -118,11 +133,12 @@ const CardDetector = (() => {
     approx.delete();
 
     if (!pts) {
-      // Fallback: rectángulo rotado mínimo. Menos fiel bajo
-      // perspectiva fuerte, pero mucho más tolerante con esquinas
-      // redondeadas, bordes con ruido o contornos ligeramente abiertos.
-      const rect = cv.minAreaRect(contour);
-      pts = rotatedRectPoints(rect);
+      // Fallback: el rectángulo rotado mínimo que ya calculamos arriba
+      // para el filtro de extent. Menos fiel bajo perspectiva fuerte,
+      // pero tolerante con esquinas redondeadas o bordes con ruido —
+      // y ahora seguro, porque ya sabemos que el contorno rellena bien
+      // ese rectángulo.
+      pts = rotatedRectPoints(boundingRect);
     }
     hull.delete();
 
@@ -185,8 +201,8 @@ const CardDetector = (() => {
       cv.Canny(blurred, edges, lower, upper);
 
       dilated = new cv.Mat();
-      kernel = cv.Mat.ones(5, 5, cv.CV_8U);
-      cv.dilate(edges, dilated, kernel, new cv.Point(-1, -1), 2);
+      kernel = cv.Mat.ones(3, 3, cv.CV_8U);
+      cv.dilate(edges, dilated, kernel, new cv.Point(-1, -1), 1);
 
       contours = new cv.MatVector();
       hierarchy = new cv.Mat();
