@@ -31,6 +31,7 @@ const dbgCorners = document.getElementById("dbg-corners");
 const dbgBbox = document.getElementById("dbg-bbox");
 const dbgFps = document.getElementById("dbg-fps");
 const dbgTracking = document.getElementById("dbg-tracking");
+const dbgDigital = document.getElementById("dbg-digital");
 
 const REACQUIRE_INTERVAL_MS = 1300;
 const REACQUIRE_MAX_DRIFT_RATIO = 0.6; // distancia entre centros vs. tamaño del quad trackeado
@@ -102,6 +103,15 @@ function drawOverlay(quad, trackingPoints) {
   if (transform) {
     if (quad) {
       const corners = ["tl", "tr", "br", "bl"].map((k) => toScreenPoint(quad[k], transform));
+
+      if (dbgDigital.checked && mode === "tracking") {
+        CardWarp.drawOnto(
+          overlayCtx,
+          { tl: corners[0], tr: corners[1], br: corners[2], bl: corners[3] },
+          rect.width,
+          rect.height
+        );
+      }
 
       if (dbgBbox.checked) {
         overlayCtx.beginPath();
