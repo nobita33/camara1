@@ -21,17 +21,36 @@
   <section id="camera-screen" class="screen hidden">
     <video id="video" playsinline autoplay muted></video>
 
-    <!-- overlay donde en fases siguientes se dibujarán esquinas / carta digital -->
+    <!-- overlay donde se dibujan esquinas / bounding box / (fases futuras: tracking, carta digital) -->
     <canvas id="overlay"></canvas>
 
     <div id="hud" class="hud">
       <span id="fps">-- fps</span>
+      <span id="detector-status">Cargando visión por computador…</span>
     </div>
 
     <button id="back-btn" class="btn-ghost" aria-label="Volver">✕</button>
+    <button id="debug-toggle-btn" class="btn-ghost btn-debug" aria-label="Debug">DBG</button>
+
+    <div id="debug-panel" class="debug-panel hidden">
+      <label><input type="checkbox" id="dbg-corners" checked /> Mostrar esquinas</label>
+      <label><input type="checkbox" id="dbg-bbox" checked /> Mostrar bounding box</label>
+      <label><input type="checkbox" id="dbg-fps" checked /> Mostrar FPS</label>
+      <label class="disabled"><input type="checkbox" disabled /> Mostrar tracking points <em>(Fase 4)</em></label>
+      <label class="disabled"><input type="checkbox" disabled /> Mostrar homografía <em>(Fase 5)</em></label>
+      <label class="disabled"><input type="checkbox" disabled /> Mostrar carta digital <em>(Fase 6)</em></label>
+    </div>
   </section>
 
   <script src="camera.js"></script>
+  <script src="cardDetector.js"></script>
   <script src="app.js"></script>
+  <script>
+    function onOpenCvLoad() {
+      CardDetector.onScriptLoaded();
+    }
+  </script>
+  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvLoad()"></script>
+
 </body>
 </html>
