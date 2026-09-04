@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black" />
+<title>Magic Camera</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- PANTALLA 1: inicio -->
+  <section id="start-screen" class="screen">
+    <h1 class="wordmark">MAGIC<br />CAMERA</h1>
+    <button id="start-btn" class="btn-primary">START CAMERA</button>
+    <p id="status" class="status" aria-live="polite"></p>
+  </section>
+
+  <!-- PANTALLA 2: cámara -->
+  <section id="camera-screen" class="screen hidden">
+    <video id="video" playsinline autoplay muted></video>
+
+    <!-- overlay donde en fases siguientes se dibujarán esquinas / carta digital -->
+    <canvas id="overlay"></canvas>
+
+    <div id="hud" class="hud">
+      <span id="fps">-- fps</span>
+    </div>
+
+    <button id="back-btn" class="btn-ghost" aria-label="Volver">✕</button>
+  </section>
+
+  <script src="camera.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

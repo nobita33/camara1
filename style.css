@@ -1,0 +1,130 @@
+:root {
+  --stage-black: #0b0b0c;
+  --card-red: #8c1f2b;
+  --card-red-light: #b8394a;
+  --ink-low: #6b6b6f;
+  --ink: #ececec;
+}
+
+* {
+  box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: var(--stage-black);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", sans-serif;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.screen {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100dvh;
+}
+
+.hidden { display: none !important; }
+
+/* ---------- pantalla de inicio ---------- */
+
+#start-screen {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 48px;
+  padding: 0 32px;
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.wordmark {
+  margin: 0;
+  text-align: center;
+  font-size: 15vw;
+  line-height: 0.92;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+}
+
+.btn-primary {
+  appearance: none;
+  border: 1px solid var(--card-red-light);
+  background: transparent;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  padding: 16px 40px;
+  border-radius: 999px;
+  transition: background-color 180ms ease, transform 120ms ease;
+}
+
+.btn-primary:active {
+  background-color: var(--card-red);
+  transform: scale(0.97);
+}
+
+.status {
+  min-height: 20px;
+  font-size: 13px;
+  color: var(--ink-low);
+  text-align: center;
+  max-width: 300px;
+}
+
+.status.error { color: var(--card-red-light); }
+
+/* ---------- pantalla de cámara ---------- */
+
+#camera-screen {
+  background: #000;
+}
+
+#video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: translateZ(0);
+}
+
+#overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.hud {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 14px);
+  left: 16px;
+  font-size: 12px;
+  color: rgba(236, 236, 236, 0.55);
+}
+
+.btn-ghost {
+  position: absolute;
+  top: calc(env(safe-area-inset-top) + 8px);
+  right: 12px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  border: none;
+  background: rgba(0, 0, 0, 0.35);
+  color: var(--ink);
+  font-size: 16px;
+  line-height: 1;
+  backdrop-filter: blur(6px);
+}
