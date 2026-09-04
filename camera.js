@@ -1,9 +1,9 @@
 /**
  * camera.js — FASE 1
  *
- * Responsabilidad única: pedir permiso, abrir la cámara trasera del
- * móvil con la mayor resolución razonable, y dejarla lista dentro de
- * un <video>. Nada de detección ni tracking todavía — eso llega en
+ * Responsabilidad única: pedir permiso, abrir la cámara frontal
+ * (selfie) del móvil con la mayor resolución razonable, y dejarla
+ * lista dentro de un <video>. Nada de detección ni tracking todavía — eso llega en
  * fases posteriores y consumirá los frames que este módulo expone.
  */
 
@@ -34,7 +34,7 @@ const Camera = (() => {
   }
 
   /**
-   * Pide la cámara trasera con la resolución más alta que el
+   * Pide la cámara frontal (selfie) con la resolución más alta que el
    * dispositivo quiera darnos. Usamos 'ideal' en vez de 'exact' para
    * que el navegador pueda hacer fallback en vez de fallar.
    */
@@ -44,7 +44,7 @@ const Camera = (() => {
     const constraints = {
       audio: false,
       video: {
-        facingMode: { ideal: "environment" },
+        facingMode: { ideal: "user" },
         width: { ideal: 1920 },
         height: { ideal: 1080 },
         frameRate: { ideal: 30, max: 60 },
