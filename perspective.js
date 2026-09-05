@@ -1,30 +1,39 @@
 /**
- * perspective.js — FASE 5 + FASE 6 (combinadas)
+ * perspective.js — Homografía + superposición de la carta digital
  *
- * Igual que pasó con la Fase 2+3, separar "calcular la homografía"
- * (Fase 5) de "usarla para superponer una carta" (Fase 6) no tiene
- * sentido en la práctica: cv.getPerspectiveTransform +
- * cv.warpPerspective ES el mecanismo de superposición. Van juntas.
+ * cv.getPerspectiveTransform + cv.warpPerspective ES el mecanismo de
+ * superposición — no hay un paso "aparte" para calcular la
+ * homografía y otro para usarla.
  *
- * Dada una imagen "carta digital" y las 4 esquinas de la carta física
- * en pantalla, calcula la homografía que lleva las esquinas de esa
- * imagen a esas 4 esquinas, deforma la imagen con perspectiva
- * PROYECTIVA real — nada de drawImage con escalado simple, que no
- * respeta perspectiva — y la compone sobre el overlay, solo en la
- * región que ocupa la carta (no en el canvas entero, por rendimiento).
+ * POR QUÉ warpPerspective y no WebGL/CSS 3D: warpPerspective da una
+ * transformación proyectiva exacta (no aproximada) por construcción,
+ * y aquí el warp se limita a un canvas pequeño del tamaño de la carta
+ * en pantalla (no toda la pantalla), así que su coste ya es bajo. Un
+ * shader WebGL sería más rápido a resoluciones grandes, pero añade
+ * una segunda superficie de render (contexto WebGL aparte del 2D que
+ * ya usa el overlay) y complejidad de sincronización sin necesidad:
+ * a este tamaño, en Safari/iPhone, la diferencia de rendimiento no
+ * justifica la complejidad extra para este proyecto. CSS 3D
+ * (matrix3d) no es una opción real aquí porque para un cuadrilátero
+ * arbitrario (no un rectángulo simplemente rotado) requiere
+ * descomponer la homografía en una proyección de cámara, que es
+ * frágil de precisión y no aporta nada sobre warpPerspective.
  *
- * De momento vive detrás del checkbox de debug "Mostrar carta
- * digital": sirve para comprobar que el warp encaja bien con el
- * tracking en movimiento. El botón TRANSFORM que decide CUÁNDO se ve
- * de verdad (con animación) es la Fase 7, todavía no implementada.
- *
- * La carta que se superpone es un As de Picas generado por código
- * (sin assets externos) — un placeholder de prueba, no arte final.
+ * La imagen que se superpone es una carta generada por código (As de
+ * Picas) — proporción 5:7 real, esquinas redondeadas, marco, índice
+ * en las esquinas y una pica dibujada con curvas Bézier (no con el
+ * carácter Unicode "♠", que en muchas fuentes móviles se ve fino y
+ * poco convincente). Es una textura ÚNICA: todo el diseño se dibuja
+ * una vez sobre un canvas y ESE canvas completo es lo que se
+ * transforma como una sola imagen — nunca se recompone el índice y
+ * el símbolo por separado en cada frame.
  */
 
 const CardWarp = (() => {
   let sourceCanvas = null;
   let scratch = null;
+
+  // ---- construcción de la textura de la carta -------------------
 
   function roundedRectPath(ctx, x, y, w, h, r) {
     ctx.beginPath();
@@ -36,41 +45,75 @@ const CardWarp = (() => {
     ctx.closePath();
   }
 
-  function buildPlaceholderCard() {
-    const c = document.createElement("canvas");
-    c.width = 350;
-    c.height = 490;
-    const ctx = c.getContext("2d");
+  // Pica dibujada con curvas Bézier, no con el glifo de fuente: dos
+  // lóbulos redondeados arriba, pico abajo, y un pequeño tallo/base.
+  function drawSpade(ctx, cx, cy, size) {
+    const w = size * 0.5;
+    const h = size * 0.5;
 
-    ctx.fillStyle = "#f5f3ee";
-    roundedRectPath(ctx, 6, 6, c.width - 12, c.height - 12, 28);
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + h * 0.55);
+    ctx.bezierCurveTo(cx + w * 0.05, cy + h * 0.1, cx + w, cy - h * 0.05, cx, cy - h * 0.65);
+    ctx.bezierCurveTo(cx - w, cy - h * 0.05, cx - w * 0.05, cy + h * 0.1, cx, cy + h * 0.55);
+    ctx.closePath();
     ctx.fill();
-    ctx.lineWidth = 5;
-    ctx.strokeStyle = "#111111";
-    roundedRectPath(ctx, 6, 6, c.width - 12, c.height - 12, 28);
+
+    ctx.beginPath();
+    ctx.moveTo(cx, cy + h * 0.35);
+    ctx.bezierCurveTo(cx - w * 0.35, cy + h * 0.75, cx - w * 0.5, cy + h * 0.95, cx, cy + h * 0.95);
+    ctx.bezierCurveTo(cx + w * 0.5, cy + h * 0.95, cx + w * 0.35, cy + h * 0.75, cx, cy + h * 0.35);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawIndex(ctx, x, y, flip) {
+    ctx.save();
+    ctx.translate(x, y);
+    if (flip) ctx.rotate(Math.PI);
+    ctx.fillStyle = "#111111";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    ctx.font = "bold 40px Georgia, 'Times New Roman', serif";
+    ctx.fillText("A", 0, 0);
+    drawSpade(ctx, 0, 34, 22);
+    ctx.restore();
+  }
+
+  function buildAceOfSpades() {
+    // Proporción real de carta de póker: 2.5:3.5 = 5:7
+    const c = document.createElement("canvas");
+    c.width = 500;
+    c.height = 700;
+    const ctx = c.getContext("2d");
+    const w = c.width;
+    const h = c.height;
+    const r = w * 0.055; // radio de esquina realista (~el de una carta física)
+
+    // Fondo + esquinas redondeadas
+    ctx.fillStyle = "#fdfbf6";
+    roundedRectPath(ctx, 0, 0, w, h, r);
+    ctx.fill();
+
+    // Borde exterior
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = "#161616";
+    roundedRectPath(ctx, 4, 4, w - 8, h - 8, r);
     ctx.stroke();
 
+    // Marco interior fino, como en una carta real
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = "rgba(20, 20, 20, 0.55)";
+    roundedRectPath(ctx, 22, 22, w - 44, h - 44, r * 0.6);
+    ctx.stroke();
+
+    // Índices en las esquinas (rango + pica pequeña), y su pareja
+    // rotada 180° en la esquina opuesta — como en una carta real.
+    drawIndex(ctx, 46, 62, false);
+    drawIndex(ctx, w - 46, h - 62, true);
+
+    // Símbolo central grande
     ctx.fillStyle = "#111111";
-    ctx.textBaseline = "top";
-    ctx.textAlign = "left";
-    ctx.font = "bold 54px -apple-system, sans-serif";
-    ctx.fillText("A", 28, 24);
-    ctx.font = "44px -apple-system, sans-serif";
-    ctx.fillText("♠", 30, 84);
-
-    ctx.save();
-    ctx.translate(c.width - 28, c.height - 24);
-    ctx.rotate(Math.PI);
-    ctx.font = "bold 54px -apple-system, sans-serif";
-    ctx.fillText("A", 0, 0);
-    ctx.font = "44px -apple-system, sans-serif";
-    ctx.fillText("♠", 2, 60);
-    ctx.restore();
-
-    ctx.font = "160px -apple-system, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    ctx.fillText("♠", c.width / 2, c.height / 2 + 10);
+    drawSpade(ctx, w / 2, h / 2, w * 0.5);
 
     return c;
   }
@@ -80,7 +123,7 @@ const CardWarp = (() => {
   }
 
   function getSource() {
-    if (!sourceCanvas) sourceCanvas = buildPlaceholderCard();
+    if (!sourceCanvas) sourceCanvas = buildAceOfSpades();
     return sourceCanvas;
   }
 
@@ -93,10 +136,11 @@ const CardWarp = (() => {
     return scratch;
   }
 
+  // ---- warp + composición -----------------------------------------
+
   /**
    * corners: {tl,tr,br,bl} en coordenadas de PANTALLA (CSS px), en el
-   * mismo espacio "sin espejar" que usa el resto del overlay (el
-   * mismo que ya reciben las esquinas/bounding box en app.js).
+   * mismo espacio "sin espejar" que usa el resto del overlay.
    */
   function drawOnto(overlayCtx, corners, cssWidth, cssHeight) {
     if (typeof cv === "undefined" || !cv.Mat) return;
@@ -151,5 +195,79 @@ const CardWarp = (() => {
     }
   }
 
-  return { setSource, drawOnto };
+  // ---- rejilla de debug ("Mostrar homografía") ---------------------
+  //
+  // Reimplementación ligera en JS puro (sin pasar por OpenCV) de la
+  // fórmula clásica "mapear un cuadrado unitario a un cuadrilátero"
+  // vía homografía — la misma transformación matemática que usa
+  // warpPerspective, solo que aquí se aplica a puntos de una rejilla
+  // en vez de a los píxeles de una imagen, así que no hace falta
+  // tirar de Mats de OpenCV solo para dibujar unas líneas de debug.
+
+  function computeUnitSquareToQuad(corners) {
+    const x0 = corners.tl.x, y0 = corners.tl.y;
+    const x1 = corners.tr.x, y1 = corners.tr.y;
+    const x2 = corners.br.x, y2 = corners.br.y;
+    const x3 = corners.bl.x, y3 = corners.bl.y;
+
+    const dx1 = x1 - x2, dx2 = x3 - x2, dx3 = x0 - x1 + x2 - x3;
+    const dy1 = y1 - y2, dy2 = y3 - y2, dy3 = y0 - y1 + y2 - y3;
+
+    let a13 = 0, a23 = 0;
+    const den = dx1 * dy2 - dx2 * dy1;
+    if (Math.abs(dx3) > 1e-9 || Math.abs(dy3) > 1e-9) {
+      if (Math.abs(den) > 1e-9) {
+        a13 = (dx3 * dy2 - dx2 * dy3) / den;
+        a23 = (dx1 * dy3 - dx3 * dy1) / den;
+      }
+    }
+
+    return {
+      a11: x1 - x0 + a13 * x1,
+      a21: x3 - x0 + a23 * x3,
+      a31: x0,
+      a12: y1 - y0 + a13 * y1,
+      a22: y3 - y0 + a23 * y3,
+      a32: y0,
+      a13,
+      a23,
+    };
+  }
+
+  function mapUnit(c, u, v) {
+    const denom = c.a13 * u + c.a23 * v + 1;
+    return {
+      x: (c.a11 * u + c.a21 * v + c.a31) / denom,
+      y: (c.a12 * u + c.a22 * v + c.a32) / denom,
+    };
+  }
+
+  function drawDebugGrid(overlayCtx, corners, divisions = 5) {
+    const c = computeUnitSquareToQuad(corners);
+    overlayCtx.save();
+    overlayCtx.strokeStyle = "rgba(120, 170, 255, 0.85)";
+    overlayCtx.lineWidth = 1;
+
+    for (let i = 0; i <= divisions; i++) {
+      const t = i / divisions;
+      overlayCtx.beginPath();
+      for (let j = 0; j <= divisions; j++) {
+        const p = mapUnit(c, t, j / divisions);
+        if (j === 0) overlayCtx.moveTo(p.x, p.y);
+        else overlayCtx.lineTo(p.x, p.y);
+      }
+      overlayCtx.stroke();
+
+      overlayCtx.beginPath();
+      for (let j = 0; j <= divisions; j++) {
+        const p = mapUnit(c, j / divisions, t);
+        if (j === 0) overlayCtx.moveTo(p.x, p.y);
+        else overlayCtx.lineTo(p.x, p.y);
+      }
+      overlayCtx.stroke();
+    }
+    overlayCtx.restore();
+  }
+
+  return { setSource, drawOnto, drawDebugGrid };
 })();
