@@ -26,6 +26,9 @@
 
     <div id="hud" class="hud">
       <span id="fps">-- fps</span>
+      <span id="hud-card" class="hud-line">CARD: —</span>
+      <span id="hud-tracking" class="hud-line">TRACKING: STOPPED</span>
+      <span id="hud-confidence" class="hud-line"></span>
       <span id="detector-status">Cargando visión por computador…</span>
     </div>
 
@@ -34,10 +37,12 @@
 
     <div id="debug-panel" class="debug-panel hidden">
       <label><input type="checkbox" id="dbg-corners" checked /> Mostrar esquinas</label>
-      <label><input type="checkbox" id="dbg-bbox" checked /> Mostrar bounding box</label>
+      <label><input type="checkbox" id="dbg-bbox" checked /> Mostrar cuadrilátero</label>
       <label><input type="checkbox" id="dbg-fps" checked /> Mostrar FPS</label>
       <label><input type="checkbox" id="dbg-tracking" /> Mostrar tracking points</label>
-      <label><input type="checkbox" id="dbg-digital" /> Mostrar carta digital</label>
+      <label><input type="checkbox" id="dbg-homography" /> Mostrar homografía</label>
+      <label><input type="checkbox" id="dbg-confidence" /> Mostrar confianza</label>
+      <label><input type="checkbox" id="dbg-digital" checked /> Mostrar carta digital</label>
     </div>
   </section>
 
