@@ -124,6 +124,11 @@ html, body {
   color: rgba(236, 236, 236, 0.55);
 }
 
+.hud-line {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+}
+
 .btn-ghost {
   position: absolute;
   top: calc(env(safe-area-inset-top) + 8px);
