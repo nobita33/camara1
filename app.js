@@ -136,10 +136,12 @@ function drawOverlay(quad, bboxColor, isTrackingView) {
     const corners = ["tl", "tr", "br", "bl"].map((k) => toScreenPoint(quad[k], transform));
     const cornersObj = { tl: corners[0], tr: corners[1], br: corners[2], bl: corners[3] };
 
-    if (isTrackingView && dbgDigital.checked) {
+    // perspective.js puede ser opcional: el seguimiento de las esquinas
+    // debe seguir funcionando aunque no esté disponible el efecto visual.
+    if (isTrackingView && dbgDigital.checked && window.CardWarp) {
       CardWarp.drawOnto(overlayCtx, cornersObj, rect.width, rect.height);
     }
-    if (isTrackingView && dbgHomography.checked) {
+    if (isTrackingView && dbgHomography.checked && window.CardWarp) {
       CardWarp.drawDebugGrid(overlayCtx, cornersObj, 5);
     }
 
@@ -333,6 +335,14 @@ function handleBack() {
 document.addEventListener("opencv-ready", () => {
   opencvReady = true;
   detectorStatusEl.textContent = "";
+});
+
+document.addEventListener("opencv-error", (event) => {
+  const message = event.detail && event.detail.message
+    ? event.detail.message
+    : "No se pudo cargar OpenCV.js.";
+  detectorStatusEl.textContent = message;
+  detectorStatusEl.classList.add("error");
 });
 
 window.addEventListener("resize", () => {
