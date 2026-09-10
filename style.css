@@ -129,6 +129,10 @@ html, body {
   letter-spacing: 0.02em;
 }
 
+#detector-status.error {
+  color: var(--card-red-light);
+}
+
 .btn-ghost {
   position: absolute;
   top: calc(env(safe-area-inset-top) + 8px);
