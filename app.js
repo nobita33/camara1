@@ -26,7 +26,7 @@ const STATE = {
 
 const CONFIRM_FRAMES = 2;          // detecciones seguidas y coherentes para pasar a TRACKING
 const CONFIRM_DRIFT_RATIO = 0.35;  // coherencia entre detecciones consecutivas (dist centroide / diagonal)
-const HOLD_MISS = 8;               // frames sin detección que se toleran antes de dar la carta por perdida
+const HOLD_MISS = 10;              // frames sin detección que se toleran antes de dar la carta por perdida
 const SHOW_CONF = 0.35;            // por debajo de esto el overlay no se dibuja
 const DROP_CONF = 0.30;            // confianza baja sostenida → LOST
 const LOST_LABEL_MS = 500;         // cuánto se mantiene la etiqueta "LOST" en el HUD
