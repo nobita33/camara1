@@ -51,14 +51,13 @@
   <script src="camera.js"></script>
   <script src="cardDetector.js"></script>
   <script src="cardTracker.js"></script>
-  <script src="perspective.js"></script>
   <script src="app.js"></script>
   <script>
     function onOpenCvLoad() {
       CardDetector.onScriptLoaded();
     }
   </script>
-  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvLoad()"></script>
+  <script async src="https://docs.opencv.org/4.x/opencv.js" onload="onOpenCvLoad()" onerror="CardDetector.onScriptLoadError && CardDetector.onScriptLoadError()"></script>
 
 </body>
 </html>
