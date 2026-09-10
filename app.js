@@ -1,39 +1,35 @@
 /**
- * app.js — Máquina de estados de tracking
+ * app.js — Bucle principal y máquina de estados (reescrito)
  *
- * NO_CARD → DETECTING → CARD_DETECTED → TRACKING → CARD_LOST → NO_CARD
+ *   SEARCHING → DETECTING → TRACKING → LOST → SEARCHING
  *
- * Esta capa (no cardTracker.js) es la que decide CUÁNDO cambiar de
- * estado, aplicando histéresis sobre la señal que le da cardTracker.js
- * (confianza 0..1 basada en datos visuales reales del frame actual —
- * ver cardTracker.js para el detalle de cómo se calcula). El overlay
- * reacciona a la confianza de forma INMEDIATA (se oculta en el mismo
- * frame en que la confianza cae por debajo del umbral); la histéresis
- * solo decide cuándo se da el tracking por completamente perdido y se
- * resetea para volver a buscar — así no hay parpadeos por un frame
- * suelto de ruido, pero tampoco se queda nada "pegado" a la cara o a
- * la mano cuando la carta física desaparece de verdad.
+ * Diferencia clave con la versión anterior: NO hay una fase de
+ * "arranca el tracker y luego confía en él". En cada frame se ejecuta
+ * una detección absoluta (CardDetector.analyze) y CardTracker solo
+ * suaviza esa medida. Por eso:
+ *   - no hay deriva sobre la cara / la mano,
+ *   - cuando la carta desaparece de verdad, la detección deja de
+ *     encontrarla y en pocos frames se pasa a LOST,
+ *   - un frame suelto malo (motion blur) no rompe nada: se mantiene el
+ *     último quad suavizado durante HOLD_MISS frames y se recupera solo.
  *
- * DETECTING → CARD_DETECTED exige varias detecciones de contorno
- * consecutivas y razonablemente coherentes entre sí (no basta con una
- * sola, que podría ser ruido).
+ * DETECTING → TRACKING exige CONFIRM_FRAMES detecciones seguidas y
+ * coherentes entre sí (una sola podría ser ruido).
  */
 
 const STATE = {
-  NO_CARD: "NO_CARD",
+  SEARCHING: "SEARCHING",
   DETECTING: "DETECTING",
-  CARD_DETECTED: "CARD_DETECTED",
   TRACKING: "TRACKING",
-  CARD_LOST: "CARD_LOST",
+  LOST: "LOST",
 };
 
-const CONF_THRESHOLD = 0.5;          // por debajo de esto, el overlay se oculta YA
-const LOST_STREAK_LIMIT = 3;         // frames consecutivos de baja confianza antes de resetear del todo
-const DETECT_CONFIRM_FRAMES = 3;     // detecciones de contorno consecutivas y coherentes para confirmar
-const DETECT_MAX_DRIFT_RATIO = 0.35; // coherencia entre detecciones consecutivas (distancia / diagonal)
-const REACQUIRE_INTERVAL_MS = 1300;
-const REACQUIRE_MAX_DRIFT_RATIO = 0.6;
-const CARD_LOST_LABEL_MS = 450;      // cuánto se mantiene visible la etiqueta "CARD: LOST" en el HUD
+const CONFIRM_FRAMES = 2;          // detecciones seguidas y coherentes para pasar a TRACKING
+const CONFIRM_DRIFT_RATIO = 0.35;  // coherencia entre detecciones consecutivas (dist centroide / diagonal)
+const HOLD_MISS = 8;               // frames sin detección que se toleran antes de dar la carta por perdida
+const SHOW_CONF = 0.35;            // por debajo de esto el overlay no se dibuja
+const DROP_CONF = 0.30;            // confianza baja sostenida → LOST
+const LOST_LABEL_MS = 500;         // cuánto se mantiene la etiqueta "LOST" en el HUD
 
 const startScreen = document.getElementById("start-screen");
 const cameraScreen = document.getElementById("camera-screen");
@@ -48,13 +44,13 @@ const detectorStatusEl = document.getElementById("detector-status");
 const hudCardEl = document.getElementById("hud-card");
 const hudTrackingEl = document.getElementById("hud-tracking");
 const hudConfidenceEl = document.getElementById("hud-confidence");
+const guideEl = document.getElementById("guide");
 
 const debugToggleBtn = document.getElementById("debug-toggle-btn");
 const debugPanel = document.getElementById("debug-panel");
 const dbgCorners = document.getElementById("dbg-corners");
 const dbgBbox = document.getElementById("dbg-bbox");
 const dbgFps = document.getElementById("dbg-fps");
-const dbgTracking = document.getElementById("dbg-tracking");
 const dbgHomography = document.getElementById("dbg-homography");
 const dbgConfidence = document.getElementById("dbg-confidence");
 const dbgDigital = document.getElementById("dbg-digital");
@@ -64,14 +60,13 @@ let frameCount = 0;
 let lastFpsSample = performance.now();
 let opencvReady = false;
 
-let state = STATE.NO_CARD;
+let state = STATE.SEARCHING;
 let confidence = 0;
-let trackedQuad = null;    // última posición visual real mientras se trackea (se muestre o no)
-let lastRawQuad = null;    // última detección de contorno cruda (para medir coherencia)
-let detectStreak = 0;
-let lostStreak = 0;
-let cardLostUntil = 0;
-let lastReacquireAt = 0;
+let displayQuad = null;    // quad que se dibuja este frame (o null)
+let candidateQuad = null;  // detección cruda mientras se confirma
+let lastRawQuad = null;
+let confirmStreak = 0;
+let lostUntil = 0;
 
 function setStatus(message, isError = false) {
   statusEl.textContent = message || "";
@@ -92,7 +87,6 @@ function getVideoCoverTransform() {
   const vw = video.videoWidth;
   const vh = video.videoHeight;
   if (!vw || !vh || !rect.width || !rect.height) return null;
-
   const scale = Math.max(rect.width / vw, rect.height / vh);
   const offsetX = (rect.width - vw * scale) / 2;
   const offsetY = (rect.height - vh * scale) / 2;
@@ -106,31 +100,30 @@ function toScreenPoint(pt, transform) {
   };
 }
 
-function quadCenter(quad) {
-  const pts = [quad.tl, quad.tr, quad.br, quad.bl];
+function quadCenter(q) {
+  const pts = [q.tl, q.tr, q.br, q.bl];
   return {
     x: pts.reduce((s, p) => s + p.x, 0) / 4,
     y: pts.reduce((s, p) => s + p.y, 0) / 4,
   };
 }
 
-function quadDiagonal(quad) {
-  return Math.hypot(quad.br.x - quad.tl.x, quad.br.y - quad.tl.y);
+function quadDiagonal(q) {
+  return Math.hypot(q.br.x - q.tl.x, q.br.y - q.tl.y);
 }
 
-function quadCenterDriftRatio(a, b) {
+function centerDriftRatio(a, b) {
   const ca = quadCenter(a);
   const cb = quadCenter(b);
   const d = Math.hypot(ca.x - cb.x, ca.y - cb.y);
-  const diag = quadDiagonal(a) || 1;
-  return d / diag;
+  return d / (quadDiagonal(a) || 1);
 }
 
 // ---------------------------------------------------------------
 // Render del overlay
 // ---------------------------------------------------------------
 
-function drawOverlay(displayQuad, bboxColor, trackingPoints) {
+function drawOverlay(quad, bboxColor, isTrackingView) {
   const dpr = window.devicePixelRatio || 1;
   const rect = video.getBoundingClientRect();
 
@@ -139,87 +132,70 @@ function drawOverlay(displayQuad, bboxColor, trackingPoints) {
   overlayCtx.clearRect(0, 0, rect.width, rect.height);
 
   const transform = getVideoCoverTransform();
-  if (transform) {
-    if (displayQuad) {
-      const corners = ["tl", "tr", "br", "bl"].map((k) => toScreenPoint(displayQuad[k], transform));
-      const cornersObj = { tl: corners[0], tr: corners[1], br: corners[2], bl: corners[3] };
+  if (transform && quad) {
+    const corners = ["tl", "tr", "br", "bl"].map((k) => toScreenPoint(quad[k], transform));
+    const cornersObj = { tl: corners[0], tr: corners[1], br: corners[2], bl: corners[3] };
 
-      if (dbgDigital.checked && state === STATE.TRACKING) {
-        CardWarp.drawOnto(overlayCtx, cornersObj, rect.width, rect.height);
-      }
-
-      if (dbgHomography.checked && state === STATE.TRACKING) {
-        CardWarp.drawDebugGrid(overlayCtx, cornersObj, 5);
-      }
-
-      if (dbgBbox.checked) {
-        overlayCtx.beginPath();
-        overlayCtx.moveTo(corners[0].x, corners[0].y);
-        for (let i = 1; i < corners.length; i++) overlayCtx.lineTo(corners[i].x, corners[i].y);
-        overlayCtx.closePath();
-        overlayCtx.strokeStyle = bboxColor;
-        overlayCtx.lineWidth = 2;
-        overlayCtx.stroke();
-      }
-
-      if (dbgCorners.checked) {
-        const labels = ["TL", "TR", "BR", "BL"];
-        corners.forEach((pt, i) => {
-          overlayCtx.beginPath();
-          overlayCtx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
-          overlayCtx.fillStyle = "#ececec";
-          overlayCtx.fill();
-
-          overlayCtx.save();
-          overlayCtx.translate(pt.x, pt.y - 14);
-          overlayCtx.scale(-1, 1);
-          overlayCtx.font = "10px -apple-system, sans-serif";
-          overlayCtx.fillStyle = "rgba(236, 236, 236, 0.8)";
-          overlayCtx.textAlign = "center";
-          overlayCtx.fillText(labels[i], 0, 0);
-          overlayCtx.restore();
-        });
-      }
-
-      if (dbgConfidence.checked && state === STATE.TRACKING) {
-        const p = corners[0];
-        overlayCtx.save();
-        overlayCtx.translate(p.x, p.y - 30);
-        overlayCtx.scale(-1, 1);
-        overlayCtx.font = "11px -apple-system, sans-serif";
-        overlayCtx.fillStyle = "rgba(236, 236, 236, 0.9)";
-        overlayCtx.textAlign = "center";
-        overlayCtx.fillText(confidence.toFixed(2), 0, 0);
-        overlayCtx.restore();
-      }
+    if (isTrackingView && dbgDigital.checked) {
+      CardWarp.drawOnto(overlayCtx, cornersObj, rect.width, rect.height);
+    }
+    if (isTrackingView && dbgHomography.checked) {
+      CardWarp.drawDebugGrid(overlayCtx, cornersObj, 5);
     }
 
-    if (dbgTracking.checked && trackingPoints && trackingPoints.length) {
-      overlayCtx.fillStyle = "rgba(76, 175, 118, 0.85)";
-      trackingPoints.forEach((p) => {
-        const sp = toScreenPoint(p, transform);
+    if (dbgBbox.checked) {
+      overlayCtx.beginPath();
+      overlayCtx.moveTo(corners[0].x, corners[0].y);
+      for (let i = 1; i < corners.length; i++) overlayCtx.lineTo(corners[i].x, corners[i].y);
+      overlayCtx.closePath();
+      overlayCtx.strokeStyle = bboxColor;
+      overlayCtx.lineWidth = 2.5;
+      overlayCtx.stroke();
+    }
+
+    if (dbgCorners.checked) {
+      const labels = ["TL", "TR", "BR", "BL"];
+      corners.forEach((pt, i) => {
         overlayCtx.beginPath();
-        overlayCtx.arc(sp.x, sp.y, 2, 0, Math.PI * 2);
+        overlayCtx.arc(pt.x, pt.y, 5, 0, Math.PI * 2);
+        overlayCtx.fillStyle = "#ececec";
         overlayCtx.fill();
+        overlayCtx.save();
+        overlayCtx.translate(pt.x, pt.y - 14);
+        overlayCtx.scale(-1, 1);
+        overlayCtx.font = "10px -apple-system, sans-serif";
+        overlayCtx.fillStyle = "rgba(236, 236, 236, 0.8)";
+        overlayCtx.textAlign = "center";
+        overlayCtx.fillText(labels[i], 0, 0);
+        overlayCtx.restore();
       });
     }
-  }
 
+    if (isTrackingView && dbgConfidence.checked) {
+      const p = corners[0];
+      overlayCtx.save();
+      overlayCtx.translate(p.x, p.y - 30);
+      overlayCtx.scale(-1, 1);
+      overlayCtx.font = "11px -apple-system, sans-serif";
+      overlayCtx.fillStyle = "rgba(236, 236, 236, 0.9)";
+      overlayCtx.textAlign = "center";
+      overlayCtx.fillText(confidence.toFixed(2), 0, 0);
+      overlayCtx.restore();
+    }
+  }
   overlayCtx.restore();
 }
 
 function updateHud() {
   const cardLabel =
-    state === STATE.TRACKING || state === STATE.CARD_DETECTED ? "DETECTED"
+    state === STATE.TRACKING ? "DETECTED"
     : state === STATE.DETECTING ? "DETECTING…"
-    : state === STATE.CARD_LOST ? "LOST"
+    : state === STATE.LOST ? "LOST"
     : "—";
-
   const trackingLabel =
     state === STATE.TRACKING
-      ? (confidence >= CONF_THRESHOLD ? "ACTIVE" : "RECOVERING")
+      ? (confidence >= SHOW_CONF ? "ACTIVE" : "RECOVERING")
       : "STOPPED";
-
   hudCardEl.textContent = `CARD: ${cardLabel}`;
   hudTrackingEl.textContent = `TRACKING: ${trackingLabel}`;
   hudConfidenceEl.textContent = state === STATE.TRACKING ? `CONFIDENCE: ${confidence.toFixed(2)}` : "";
@@ -229,106 +205,57 @@ function updateHud() {
 // Máquina de estados
 // ---------------------------------------------------------------
 
-function beginTracking(video, quad) {
-  if (CardTracker.start(video, quad)) {
-    state = STATE.TRACKING;
-    trackedQuad = quad;
-    confidence = 1;
-    lostStreak = 0;
-    lastReacquireAt = performance.now();
-    return true;
-  }
-  return false;
-}
-
-function resetToSearching() {
-  CardTracker.stop();
-  state = STATE.CARD_LOST;
-  cardLostUntil = performance.now() + CARD_LOST_LABEL_MS;
-  trackedQuad = null;
-  lastRawQuad = null;
+function toLost() {
+  CardTracker.reset();
+  CardDetector.reset();
+  state = STATE.LOST;
+  lostUntil = performance.now() + LOST_LABEL_MS;
   confidence = 0;
-  detectStreak = 0;
-  lostStreak = 0;
+  displayQuad = null;
+  candidateQuad = null;
+  lastRawQuad = null;
+  confirmStreak = 0;
 }
 
-/**
- * Mientras se trackea, cada ~1.3s se fuerza una detección de contorno
- * de control; si el resultado está razonablemente cerca de lo que ya
- * se sigue, se usa para "re-anclar" el tracking (corrige deriva
- * acumulada y renueva tanto los puntos de seguimiento como el parche
- * de referencia para la comprobación de contenido).
- */
-function maybeReacquire(now) {
-  if (now - lastReacquireAt < REACQUIRE_INTERVAL_MS) return;
-  lastReacquireAt = now;
+function stepTracking(detected) {
+  const r = CardTracker.feed(detected);
+  confidence = r.confidence;
 
-  const before = CardDetector.getQuad();
-  CardDetector.maybeDetect(video, now, true);
-  const fresh = CardDetector.getQuad();
-  if (!fresh || fresh === before || !trackedQuad) return;
-
-  if (quadCenterDriftRatio(trackedQuad, fresh) < REACQUIRE_MAX_DRIFT_RATIO) {
-    beginTracking(video, fresh);
-  }
-}
-
-function stepTracking(now) {
-  const updated = CardTracker.update(video, trackedQuad);
-  confidence = CardTracker.getConfidence();
-
-  if (updated) trackedQuad = updated;
-
-  if (updated && confidence >= CONF_THRESHOLD) {
-    lostStreak = 0;
-    maybeReacquire(now);
+  if (!r.quad || r.missStreak > HOLD_MISS) {
+    toLost();
     return;
   }
-
-  // Confianza baja (o el tracker ya no tiene nada que seguir): el
-  // overlay se oculta este mismo frame (se decide en el render, más
-  // abajo, comprobando confidence/estado) — aquí solo contamos
-  // cuántos frames seguidos lleva así, para decidir si se resetea
-  // del todo.
-  lostStreak++;
-  if (!updated || lostStreak >= LOST_STREAK_LIMIT) {
-    resetToSearching();
+  if (confidence < DROP_CONF && r.missStreak >= 3) {
+    toLost();
+    return;
   }
+  displayQuad = r.quad;
 }
 
-function stepSearching(now) {
-  if (state === STATE.CARD_LOST && now > cardLostUntil) {
-    state = STATE.NO_CARD;
-  }
-
-  const ranDetection = CardDetector.maybeDetect(video, now);
-  const detected = CardDetector.getQuad();
-
-  if (ranDetection) {
-    if (detected) {
-      const consistent = lastRawQuad && quadCenterDriftRatio(detected, lastRawQuad) < DETECT_MAX_DRIFT_RATIO;
-      detectStreak = consistent ? detectStreak + 1 : 1;
-      lastRawQuad = detected;
-    } else {
-      detectStreak = 0;
-      lastRawQuad = null;
-    }
-  }
+function stepSearching(detected, now) {
+  if (state === STATE.LOST && now > lostUntil) state = STATE.SEARCHING;
 
   if (!detected) {
-    trackedQuad = null;
-    if (state !== STATE.CARD_LOST) state = STATE.NO_CARD;
+    confirmStreak = 0;
+    lastRawQuad = null;
+    candidateQuad = null;
+    if (state !== STATE.LOST) state = STATE.SEARCHING;
     return;
   }
 
-  trackedQuad = detected;
-  state = detectStreak >= DETECT_CONFIRM_FRAMES ? STATE.CARD_DETECTED : STATE.DETECTING;
+  const consistent =
+    lastRawQuad && centerDriftRatio(detected.quad, lastRawQuad) < CONFIRM_DRIFT_RATIO;
+  confirmStreak = consistent ? confirmStreak + 1 : 1;
+  lastRawQuad = detected.quad;
+  candidateQuad = detected.quad;
+  state = STATE.DETECTING;
 
-  if (state === STATE.CARD_DETECTED) {
-    if (!beginTracking(video, detected)) {
-      detectStreak = 0;
-      state = STATE.DETECTING;
-    }
+  if (confirmStreak >= CONFIRM_FRAMES) {
+    CardTracker.reset();
+    CardTracker.feed(detected);
+    displayQuad = CardTracker.getQuad();
+    confidence = CardTracker.getConfidence();
+    state = STATE.TRACKING;
   }
 }
 
@@ -338,24 +265,26 @@ function renderLoop() {
   frameCount++;
   const elapsed = now - lastFpsSample;
   if (elapsed >= 500) {
-    const fps = Math.round((frameCount / elapsed) * 1000);
-    fpsEl.textContent = `${fps} fps`;
+    fpsEl.textContent = `${Math.round((frameCount / elapsed) * 1000)} fps`;
     frameCount = 0;
     lastFpsSample = now;
   }
   fpsEl.classList.toggle("hidden", !dbgFps.checked);
 
-  if (opencvReady) {
-    if (state === STATE.TRACKING) stepTracking(now);
-    else stepSearching(now);
+  if (opencvReady && video.readyState >= 2) {
+    const prev = CardTracker.getQuad();
+    const detected = CardDetector.analyze(video, prev);
+    if (state === STATE.TRACKING) stepTracking(detected);
+    else stepSearching(detected, now);
   }
 
-  const showTracked = state === STATE.TRACKING && confidence >= CONF_THRESHOLD;
-  const showCandidate = state === STATE.DETECTING || state === STATE.CARD_DETECTED;
-  const displayQuad = showTracked || showCandidate ? trackedQuad : null;
-  const bboxColor = showTracked ? "rgba(76, 175, 118, 0.9)" : "rgba(230, 170, 60, 0.9)";
+  const trackingView = state === STATE.TRACKING && confidence >= SHOW_CONF;
+  const candidateView = state === STATE.DETECTING && candidateQuad;
+  const quad = trackingView ? displayQuad : candidateView ? candidateQuad : null;
+  const color = trackingView ? "rgba(76, 175, 118, 0.95)" : "rgba(230, 170, 60, 0.95)";
 
-  drawOverlay(displayQuad, bboxColor, state === STATE.TRACKING ? CardTracker.getDebugPointsNative() : null);
+  drawOverlay(quad, color, trackingView);
+  if (guideEl) guideEl.classList.toggle("hidden", trackingView);
   updateHud();
 
   rafId = requestAnimationFrame(renderLoop);
@@ -364,22 +293,20 @@ function renderLoop() {
 async function handleStart() {
   setStatus("Solicitando cámara…");
   startBtn.disabled = true;
-
   try {
     await Camera.start(video);
-
     startScreen.classList.add("hidden");
     cameraScreen.classList.remove("hidden");
     setStatus("");
 
     sizeOverlayToVideo();
     CardDetector.reset();
-    CardTracker.stop();
-    state = STATE.NO_CARD;
-    trackedQuad = null;
+    CardTracker.reset();
+    state = STATE.SEARCHING;
+    displayQuad = null;
+    candidateQuad = null;
     lastRawQuad = null;
-    detectStreak = 0;
-    lostStreak = 0;
+    confirmStreak = 0;
     confidence = 0;
     frameCount = 0;
     lastFpsSample = performance.now();
@@ -396,9 +323,9 @@ function handleBack() {
   if (rafId) cancelAnimationFrame(rafId);
   Camera.stop();
   CardDetector.reset();
-  CardTracker.stop();
-  state = STATE.NO_CARD;
-  trackedQuad = null;
+  CardTracker.reset();
+  state = STATE.SEARCHING;
+  displayQuad = null;
   cameraScreen.classList.add("hidden");
   startScreen.classList.remove("hidden");
 }
@@ -411,9 +338,7 @@ document.addEventListener("opencv-ready", () => {
 window.addEventListener("resize", () => {
   if (!cameraScreen.classList.contains("hidden")) sizeOverlayToVideo();
 });
-window.addEventListener("orientationchange", () => {
-  setTimeout(sizeOverlayToVideo, 200);
-});
+window.addEventListener("orientationchange", () => setTimeout(sizeOverlayToVideo, 200));
 
 startBtn.addEventListener("click", handleStart);
 backBtn.addEventListener("click", handleBack);
