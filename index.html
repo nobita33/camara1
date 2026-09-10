@@ -21,8 +21,11 @@
   <section id="camera-screen" class="screen hidden">
     <video id="video" playsinline autoplay muted></video>
 
-    <!-- overlay donde se dibujan esquinas / bounding box / (fases futuras: tracking, carta digital) -->
+    <!-- overlay donde se dibujan esquinas / cuadrilátero / carta digital -->
     <canvas id="overlay"></canvas>
+
+    <!-- guía de encuadre: ayuda a colocar la carta donde se detecta mejor -->
+    <div id="guide" class="guide"></div>
 
     <div id="hud" class="hud">
       <span id="fps">-- fps</span>
@@ -39,7 +42,6 @@
       <label><input type="checkbox" id="dbg-corners" checked /> Mostrar esquinas</label>
       <label><input type="checkbox" id="dbg-bbox" checked /> Mostrar cuadrilátero</label>
       <label><input type="checkbox" id="dbg-fps" checked /> Mostrar FPS</label>
-      <label><input type="checkbox" id="dbg-tracking" /> Mostrar tracking points</label>
       <label><input type="checkbox" id="dbg-homography" /> Mostrar homografía</label>
       <label><input type="checkbox" id="dbg-confidence" /> Mostrar confianza</label>
       <label><input type="checkbox" id="dbg-digital" checked /> Mostrar carta digital</label>
