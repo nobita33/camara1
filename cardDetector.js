@@ -38,9 +38,16 @@ const CardDetector = (() => {
 
   // Rechazos duros (antes de puntuar)
   const MIN_AREA_RATIO = 0.015;    // fracción mínima del área de trabajo
-  const MAX_AREA_RATIO = 0.95;
-  const ASPECT_HARD_MIN = 1.08;
-  const ASPECT_HARD_MAX = 2.9;     // permite inclinación/perspectiva fuerte
+  const MAX_AREA_RATIO = 0.92;     // por encima: la carta cubre casi todo el encuadre (demasiado cerca)
+  // Proporción admitida. El mínimo baja de 1.08: cuando acercas la
+  // carta y ROZA los bordes del frame, la parte visible deja de tener
+  // proporción de carta y se acerca a un cuadrado. Un blob cuadrado,
+  // muy claro, poco saturado, que llena su rectángulo y está donde ya
+  // estaba la carta es, casi con seguridad, la carta recortada por el
+  // borde. Los filtros de extent / solidez / saturación siguen siendo
+  // el guardarraíl contra falsos positivos.
+  const ASPECT_HARD_MIN = 0.60;
+  const ASPECT_HARD_MAX = 3.3;     // permite inclinación/perspectiva fuerte
   const EXTENT_HARD_MIN = 0.60;
   const SAT_HARD_MAX = 175;        // 0..255; por encima de esto es claramente un objeto de color
 
@@ -218,7 +225,27 @@ const CardDetector = (() => {
   // Puntuación de un candidato
   // ---------------------------------------------------------------
 
-  function scoreCandidate(cand, workArea, prevQuadWork) {
+  /**
+   * ¿El quad toca los bordes del frame de trabajo? Si toca 2 o más
+   * lados, es una vista PARCIAL de algo más grande que el encuadre
+   * (típicamente la carta acercada a la cámara). En ese caso su
+   * proporción visible ya no es la de una carta entera, así que no se
+   * puede exigir proporción de carta.
+   */
+  function edgeContact(q, workW, workH) {
+    const m = 3;
+    const pts = [q.tl, q.tr, q.br, q.bl];
+    let left = false, right = false, top = false, bottom = false;
+    for (const p of pts) {
+      if (p.x <= m) left = true;
+      if (p.x >= workW - m) right = true;
+      if (p.y <= m) top = true;
+      if (p.y >= workH - m) bottom = true;
+    }
+    return [left, right, top, bottom].filter(Boolean).length;
+  }
+
+  function scoreCandidate(cand, workArea, workW, workH, prevQuadWork) {
     const q = cand.ordered;
     if (!isConvex(q)) return 0;
 
@@ -226,13 +253,29 @@ const CardDetector = (() => {
     const areaRatio = area / workArea;
     if (areaRatio < MIN_AREA_RATIO || areaRatio > MAX_AREA_RATIO) return 0;
 
-    const aspect = quadAspect(q);
-    if (aspect === null || aspect < ASPECT_HARD_MIN || aspect > ASPECT_HARD_MAX) return 0;
+    // "clipped" = vista parcial de algo mayor que el encuadre: toca 2+
+    // bordes, o simplemente ocupa gran parte del frame (carta acercada
+    // a la cámara, aunque por la rotación no llegue a tocar 2 bordes).
+    const sidesTouched = edgeContact(q, workW, workH);
+    const clipped = sidesTouched >= 2 || areaRatio > 0.45;
 
-    const fAspect = clamp01(1 - Math.abs(aspect - ASPECT_TARGET) / ASPECT_TOLERANCE);
+    const aspect = quadAspect(q);
+    if (aspect === null) return 0;
+    if (!clipped && (aspect < 1.05 || aspect > ASPECT_HARD_MAX)) return 0;
+    if (clipped && (aspect < ASPECT_HARD_MIN || aspect > ASPECT_HARD_MAX)) return 0;
+
+    // Una carta recortada por el borde ya no tiene por qué parecer una
+    // carta de proporción; en ese caso la proporción no penaliza.
+    const fAspect = clipped
+      ? 0.85
+      : clamp01(1 - Math.abs(aspect - ASPECT_TARGET) / ASPECT_TOLERANCE);
     const fExtent = clamp01((cand.extent - EXTENT_HARD_MIN) / (EXTENT_GOOD - EXTENT_HARD_MIN));
     const fSolidity = clamp01((cand.solidity - 0.80) / (SOLIDITY_GOOD - 0.80));
     const fArea = clamp01((areaRatio - MIN_AREA_RATIO) / (0.22 - MIN_AREA_RATIO));
+
+    // Un candidato recortado exige extent y solidez altos (rectángulo
+    // claro y sólido), porque no puede apoyarse en la proporción.
+    if (clipped && (cand.extent < 0.82 || cand.solidity < 0.90)) return 0;
 
     let fNear = 0.5;
     if (prevQuadWork) {
@@ -335,7 +378,7 @@ const CardDetector = (() => {
 
       // --- Camino de respaldo: Canny, solo si Otsu no da nada bueno ---
       const scored1 = cands
-        .map((c) => scoreCandidate(c, workArea, prevQuadWork))
+        .map((c) => scoreCandidate(c, workArea, WORK_WIDTH, workH, prevQuadWork))
         .filter((s) => s && s.base > 0);
       let best1 = scored1.sort((a, b) => b.base - a.base)[0] || null;
 
@@ -354,7 +397,7 @@ const CardDetector = (() => {
         bigK.delete();
         const cands2 = collectContours(canny, workArea);
         const scored2 = cands2
-          .map((c) => scoreCandidate(c, workArea, prevQuadWork))
+          .map((c) => scoreCandidate(c, workArea, WORK_WIDTH, workH, prevQuadWork))
           .filter((s) => s && s.base > 0);
         const best2 = scored2.sort((a, b) => b.base - a.base)[0] || null;
         best = [best1, best2].filter(Boolean).sort((a, b) => b.base - a.base)[0] || null;
