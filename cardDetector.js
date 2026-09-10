@@ -76,12 +76,61 @@ const CardDetector = (() => {
     workCtx = workCanvas.getContext("2d", { willReadFrequently: true });
   }
 
-  function onScriptLoaded() {
-    cv["onRuntimeInitialized"] = () => {
+  /**
+   * OpenCV.js 4.x reciente expone `cv` como una Promise. Otras
+   * compilaciones 4.x terminan el runtime después de que el script haya
+   * disparado `load` y señalan que ya se puede usar con
+   * `onRuntimeInitialized`. Esperamos ambos protocolos.
+   */
+  function waitForOpenCv() {
+    if (typeof window.cv === "undefined") {
+      return Promise.reject(new Error("El script de OpenCV.js no creó el objeto cv."));
+    }
+
+    if (window.cv instanceof Promise) return window.cv;
+    if (typeof window.cv.Mat === "function") return Promise.resolve(window.cv);
+
+    const legacyCv = window.cv;
+    return new Promise((resolve, reject) => {
+      const previous = legacyCv.onRuntimeInitialized;
+      const timeout = window.setTimeout(() => {
+        reject(new Error("OpenCV.js tardó demasiado en inicializarse."));
+      }, 15000);
+
+      legacyCv.onRuntimeInitialized = () => {
+        try {
+          if (typeof previous === "function") previous.call(legacyCv);
+          window.clearTimeout(timeout);
+          resolve(window.cv);
+        } catch (error) {
+          window.clearTimeout(timeout);
+          reject(error);
+        }
+      };
+    });
+  }
+
+  async function onScriptLoaded() {
+    try {
+      window.cv = await waitForOpenCv();
+      if (!window.cv || typeof window.cv.Mat !== "function") {
+        throw new Error("OpenCV.js terminó de cargar, pero no está listo para usarse.");
+      }
+
+      if (ready) return;
       init();
       ready = true;
       document.dispatchEvent(new CustomEvent("opencv-ready"));
-    };
+    } catch (error) {
+      console.error("[CardDetector] No se pudo iniciar OpenCV.js:", error);
+      document.dispatchEvent(new CustomEvent("opencv-error", { detail: error }));
+    }
+  }
+
+  function onScriptLoadError() {
+    const error = new Error("No se pudo descargar OpenCV.js. Comprueba la conexión a Internet.");
+    console.error("[CardDetector]", error);
+    document.dispatchEvent(new CustomEvent("opencv-error", { detail: error }));
   }
 
   // ---------------------------------------------------------------
@@ -458,5 +507,5 @@ const CardDetector = (() => {
     lastQuad = null;
   }
 
-  return { isReady, onScriptLoaded, analyze, orderQuad, reset };
+  return { isReady, onScriptLoaded, onScriptLoadError, analyze, orderQuad, reset };
 })();
