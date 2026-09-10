@@ -1,24 +1,18 @@
 /**
- * camera.js — FASE 1
+ * camera.js — Cámara selfie (frontal)
  *
- * Responsabilidad única: pedir permiso, abrir la cámara frontal
- * (selfie) del móvil con la mayor resolución razonable, y dejarla
- * lista dentro de un <video>. Nada de detección ni tracking todavía — eso llega en
- * fases posteriores y consumirá los frames que este módulo expone.
+ * Pide permiso, abre la cámara frontal del móvil y la deja lista en un
+ * <video>. Resolución bajada a 1280×720: la detección se ejecuta ahora
+ * en CADA frame, así que interesa un frame de origen más ligero; 1080p
+ * no aporta precisión útil a este uso y sí carga la CPU.
  */
 
 const Camera = (() => {
 
   let stream = null;
 
-  /**
-   * Comprueba los requisitos mínimos antes de tocar getUserMedia,
-   * para poder dar un mensaje de error útil en vez de una excepción
-   * críptica del navegador.
-   */
   function checkPreconditions() {
-    const isSecure = window.isSecureContext; // true en https:// y en localhost
-    if (!isSecure) {
+    if (!window.isSecureContext) {
       throw new Error(
         "Esta página no se está sirviendo por HTTPS. Safari bloquea la " +
         "cámara en orígenes no seguros. Consulta el README para desplegar " +
@@ -33,11 +27,6 @@ const Camera = (() => {
     }
   }
 
-  /**
-   * Pide la cámara frontal (selfie) con la resolución más alta que el
-   * dispositivo quiera darnos. Usamos 'ideal' en vez de 'exact' para
-   * que el navegador pueda hacer fallback en vez de fallar.
-   */
   async function start(videoEl) {
     checkPreconditions();
 
@@ -45,8 +34,8 @@ const Camera = (() => {
       audio: false,
       video: {
         facingMode: { ideal: "user" },
-        width: { ideal: 1920 },
-        height: { ideal: 1080 },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
         frameRate: { ideal: 30, max: 60 },
       },
     };
@@ -54,13 +43,23 @@ const Camera = (() => {
     stream = await navigator.mediaDevices.getUserMedia(constraints);
 
     videoEl.srcObject = stream;
-    videoEl.setAttribute("playsinline", "true"); // evita fullscreen forzado en iOS
+    videoEl.setAttribute("playsinline", "true");
     videoEl.muted = true;
-
-    // iOS Safari a veces no arranca el <video> solo con autoplay;
-    // el play() explícito tras la interacción del usuario (el tap en
-    // START) es lo que lo garantiza de forma fiable.
     await videoEl.play();
+
+    // Enfoque continuo si el dispositivo lo permite: una carta a
+    // distancia de brazo con enfoque fijo puede salir borrosa y arruinar
+    // la detección de bordes. No todos los navegadores lo soportan;
+    // si falla, se ignora.
+    try {
+      const track = stream.getVideoTracks()[0];
+      const caps = track.getCapabilities ? track.getCapabilities() : {};
+      if (caps.focusMode && caps.focusMode.includes("continuous")) {
+        await track.applyConstraints({ advanced: [{ focusMode: "continuous" }] });
+      }
+    } catch (e) {
+      /* opcional: si no se puede, seguimos */
+    }
 
     return stream;
   }
